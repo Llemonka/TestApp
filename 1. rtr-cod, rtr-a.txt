@@ -1,0 +1,158 @@
+1. Настройка имён и IP-адресации на устройствах rtr-cod и rtr-a
+
+login admin
+password admin
+
+ecorouter>enable
+ecorouter#configure terminal 
+ecorouter(config)#hostname rtr-cod
+rtr-cod(config)#ip domain-name cod.ssa2026.region
+rtr-cod(config)#write memory
+
+
+проверка
+show hostname
+show running-config | include domain-name
+show port brief
+
+Назначение IP-адресов на устройство
+
+rtr-cod(config)#interface isp
+rtr-cod(config-if)#ip address 178.207.179.4/29
+rtr-cod(config-if)#description "Connecting to an ISP provider"
+rtr-cod(config-if)#exit
+rtr-cod(config)#interface fw-cod
+rtr-cod(config-if)#ip address 172.16.1.1/30
+rtr-cod(config-if)#description "Connecting to fw-cod"
+rtr-cod(config-if)#exit
+rtr-cod(config)#
+
+show ip interface brief
+
+создание сервесных портов 
+rtr-cod(config)#port te0
+rtr-cod(config-port)#service-instance te0/isp
+rtr-cod(config-service-instance)#encapsulation untagged 
+rtr-cod(config-service-instance)#connect ip interface isp 
+rtr-cod(config-service-instance)#exit
+rtr-cod(config-port)#exit
+rtr-cod(config)#
+rtr-cod(config)#port te1
+rtr-cod(config-port)#service-instance te1/fw-cod
+rtr-cod(config-service-instance)#encapsulation untagged 
+rtr-cod(config-service-instance)#connect ip interface fw-cod 
+rtr-cod(config-service-instance)#exit
+rtr-cod(config-port)#exit
+rtr-cod(config)# write memory
+Building configuration...
+
+все по заданию повторяется ( смотреть внимательно дальне на имя)
+
+создание маршрута
+rtr-a(config)#ip route 0.0.0.0/0 178.207.179.25
+
+show ip route static
+
+Реализуем создание под-интерфейсов для дальнейшем маршрутизации между VLAN-ами:
+
+rtr-a(config)#interface vl100
+rtr-a(config-if)#ip address 172.20.10.254/24
+rtr-a(config-if)#description "VLAN - SRV"
+rtr-a(config-if)#exit
+rtr-a(config)#
+rtr-a(config)#interface vl200
+rtr-a(config-if)#ip address 172.20.20.254/24
+rtr-a(config-if)#description "VLAN - CLI"
+rtr-a(config-if)#exit
+rtr-a(config)#
+rtr-a(config)#interface vl300
+rtr-a(config-if)#ip address 172.20.30.254/24
+rtr-a(config-if)#description "VLAN - MGMT"
+rtr-a(config-if)#exit
+rtr-a(config)#
+
+show ip interface brief
+
+на базе физического интерфейса te1 для каждого VLAN-а создаём service-instance
+
+rtr-a(config)#port te1
+rtr-a(config-port)#service-instance te1/vl100
+rtr-a(config-service-instance)#encapsulation dot1q 100
+rtr-a(config-service-instance)#rewrite pop 1
+rtr-a(config-service-instance)#connect in
+rtr-a(config-service-instance)#connect ip interface vl100                   
+rtr-a(config-service-instance)#exit
+rtr-a(config-port)#
+rtr-a(config-port)#service-instance te1/vl200
+rtr-a(config-service-instance)#encapsulation dot1q 200
+rtr-a(config-service-instance)#rewrite pop 1
+rtr-a(config-service-instance)#connect ip interface vl200 
+rtr-a(config-service-instance)#exit
+rtr-a(config-port)#
+rtr-a(config-port)#service-instance te1/vl300
+rtr-a(config-service-instance)#encapsulation dot1q 300
+rtr-a(config-service-instance)#rewrite pop 1
+rtr-a(config-service-instance)#connect ip interface vl300 
+rtr-a(config-service-instance)#exit
+rtr-a(config-port)#exit
+rtr-a(config)#write memory
+Building configuration...
+
+show ip interface brief
+show service-instance brie
+
+
+3. настройка маршрутизации 
+
+rtr-cod(config)#router  bgp 64500 - запуск протокола
+rtr-cod(config-router)#bgp router-id 178.207.179.4 -Указать идентификатор маршрутизатора
+rtr-cod(config-router)#neighbor 178.207.179.1 remote-as 31133 - Сконфигурируйте BGP соседство
+
+show ip bgp summary
+show ip route
+
+4. Настройка туннелей между офисом «а» и «cod»
+
+rtr-cod(config)#interface tunnel.0
+rtr-cod(config-if-tunnel)#ip address 10.10.10.1/30
+rtr-cod(config-if-tunnel)#ip tunnel 178.207.179.4 178.207.179.28 mode gre
+
+show interface tunnel.0
+
+rtr-a(config)#interface tunnel.0
+rtr-a(config-if-tunnel)#ip address 10.10.10.1/30
+rtr-a(config-if-tunnel)#ip tunnel  178.207.179.28 178.207.179.4 mode gre
+
+show interface tunnel.0
+
+
+5. Настройка доступа в Интернет
+
+rtr-cod(config)#interface isp 
+rtr-cod(config-if)#ip nat outside 
+rtr-cod(config-if)#exit
+rtr-cod(config)#interface fw-cod 
+rtr-cod(config-if)#ip nat inside 
+rtr-cod(config-if)#exit
+
+
+rtr-cod(config)#ip nat pool fw-cod 172.16.1.1-172.16.1.2
+rtr-cod(config)#ip nat pool vlan100 192.168.10.1-192.168.10.254
+rtr-cod(config)#ip nat pool vlan300 192.168.30.1-192.168.30.254
+rtr-cod(config)#ip nat pool vlan400 192.168.40.1-192.168.40.254
+rtr-cod(config)#ip nat pool vlan500 192.168.50.1-192.168.50.254
+rtr-cod(config)#ip nat source dynamic inside pool fw-cod overload interface isp 
+rtr-cod(config)#ip nat source dynamic inside pool vlan100 overload interface isp
+rtr-cod(config)#ip nat source dynamic inside pool vlan300 overload interface isp 
+rtr-cod(config)#ip nat source dynamic inside pool vlan400 overload interface isp 
+rtr-cod(config)#ip nat source dynamic inside pool vlan500 overload interface isp 
+rtr-cod(config)#write memory
+Building configuration...
+
+
+rtr-cod(config)#ip route 192.168.10.0/24 172.16.1.2
+rtr-cod(config)#ip route 192.168.30.0/24 172.16.1.2
+rtr-cod(config)#ip route 192.168.40.0/24 172.16.1.2
+rtr-cod(config)#ip route 192.168.50.0/24 172.16.1.2
+rtr-cod(config)#
+

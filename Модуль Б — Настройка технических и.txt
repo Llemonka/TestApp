@@ -1,0 +1,267 @@
+Модуль Б — Настройка технических и программных средств информационно-коммуникационных систем (инвариант)
+________________________________________
+32.1 Маршрутизатор ЦОД — rtr-cod (EcoRouterOS)
+enable
+configure terminal
+hostname rtr-cod
+ip domain-name cod.ssa2026.region
+clock timezone MSK 3
+ntp server 100.100.100.100
+interface GigabitEthernet0/0
+ description WAN_GIGAFON_COD
+ ip address 178.207.179.4 255.255.255.248
+ no shutdown
+interface GigabitEthernet0/1
+ description LAN_COD
+ ip address <LAN_IP> <MASK>
+ no shutdown
+interface Tunnel0
+ description GRE_TO_OFFICE_A
+ ip address 10.10.10.1 255.255.255.252
+ tunnel source GigabitEthernet0/0
+ tunnel destination 178.207.179.28
+router ospf 1
+ passive-interface default
+ no passive-interface Tunnel0
+ area 0 authentication message-digest
+interface Tunnel0
+ ip ospf message-digest-key 1 md5 P@ssw0rd
+router bgp 64500
+ neighbor 178.207.179.1 remote-as 31133
+ neighbor 178.207.179.1 description GIGAFON_COD
+ip prefix-list NO-INTERNAL seq 5 deny 0.0.0.0/0 le 32
+router bgp 64500
+ neighbor 178.207.179.1 prefix-list NO-INTERNAL out
+access-list 1 permit any
+ip nat inside source list 1 interface GigabitEthernet0/0 overload
+interface GigabitEthernet0/1
+ ip nat inside
+interface GigabitEthernet0/0
+ ip nat outside
+aaa new-model
+aaa authentication login default group radius local
+aaa authorization exec default group radius local
+radius-server host <IP_srv1-cod> key radiuskey
+username localadmin secret LocalP@ss
+end
+write memory
+________________________________________
+32.2 Маршрутизатор офиса — rtr-a (EcoRouterOS)
+enable
+configure terminal
+hostname rtr-a
+ip domain-name office.ssa2026.region
+clock timezone MSK 3
+ntp server 100.100.100.100
+interface GigabitEthernet0/0
+ description WAN_GIGAFON_A
+ ip address 178.207.179.28 255.255.255.248
+ no shutdown
+interface Tunnel0
+ ip address 10.10.10.2 255.255.255.252
+ tunnel source GigabitEthernet0/0
+ tunnel destination 178.207.179.4
+router ospf 1
+ passive-interface default
+ no passive-interface Tunnel0
+ area 0 authentication message-digest
+interface Tunnel0
+ ip ospf message-digest-key 1 md5 P@ssw0rd
+end
+write memory
+________________________________________
+32.3 Коммутатор sw1-cod (Альт Сервер 11)
+hostnamectl set-hostname sw1-cod.cod.ssa2026.region
+timedatectl set-timezone Europe/Moscow
+nmcli con add type bridge ifname br0
+nmcli con add type ethernet ifname eth1 master br0
+nmcli con add type ethernet ifname eth2 master br0
+bridge vlan add dev br0 vid 100
+bridge vlan add dev br0 vid 200
+bridge vlan add dev br0 vid 300 pvid untagged
+bridge vlan add dev br0 vid 400
+bridge vlan add dev br0 vid 500
+ip addr add 192.168.300.2/24 dev br0
+ip link set br0 up
+________________________________________
+32.4 Сервер srv1-cod (DNS + CA + Zabbix)
+hostnamectl set-hostname srv1-cod.cod.ssa2026.region
+timedatectl set-timezone Europe/Moscow
+apt install bind freeradius zabbix-server-pgsql zabbix-web-apache
+(DNS, CA, Zabbix — настройка по разделам выше)
+________________________________________
+32.5 Межсетевой экран — fw-cod (Ideco NGFW NOVUM 19)
+hostnamectl set-hostname fw-cod.cod.ssa2026.region
+timedatectl set-timezone Europe/Moscow
+nano /etc/chrony.conf
+server 100.100.100.100 iburst
+systemctl restart chronyd
+systemctl enable chronyd
+nmcli con add type ethernet ifname eth0
+nmcli con mod eth0 ipv4.addresses 192.168.300.254/24
+nmcli con mod eth0 ipv4.method manual
+nmcli con up eth0
+nmcli con add type ethernet ifname eth1
+nmcli con mod eth1 ipv4.addresses <INTERNAL_IP>/24
+nmcli con mod eth1 ipv4.method manual
+nmcli con up eth1
+echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+sysctl -p
+vtysh
+configure terminal
+router ospf 1
+ passive-interface default
+ no passive-interface eth0
+ area 0 authentication message-digest
+exit
+interface eth0
+ ip ospf message-digest-key 1 md5 P@ssw0rd
+exit
+write memory
+exit
+iptables -A INPUT -p ospf -j ACCEPT
+iptables -A INPUT -p icmp -j ACCEPT
+iptables -A INPUT -p tcp --dport 53 -j ACCEPT
+iptables -A INPUT -p udp --dport 53 -j ACCEPT
+iptables -A INPUT -p tcp --dport 80 -j ACCEPT
+iptables -A INPUT -p tcp --dport 443 -j ACCEPT
+________________________________________
+32.6 Сервер srv2-cod — PostgreSQL + iSCSI target
+hostnamectl set-hostname srv2-cod.cod.ssa2026.region
+timedatectl set-timezone Europe/Moscow
+apt update && apt install -y postgresql-17 tgt lvm2 xfsprogs nfs-kernel-server
+systemctl enable --now postgresql
+sudo -i -u postgres
+psql -c "CREATE ROLE superadmin WITH SUPERUSER LOGIN PASSWORD 'P@ssw0rdSQL';"
+exit
+sudo tgtadm --lld iscsi --op new --mode target --tid 1 -T iqn.2026-02.region.ssa2026.cod:data.target
+sudo tgtadm --lld iscsi --op new --mode logicalunit --tid 1 --lun 1 -b /dev/sdb
+sudo systemctl enable --now tgt
+mkdir -p /opt/data
+mount /dev/sdb /opt/data
+echo "/dev/sdb /opt/data xfs defaults 0 0" >> /etc/fstab
+echo "/opt/data 192.168.300.0/24(rw,sync,no_root_squash)" >> /etc/exports
+exportfs -a
+systemctl enable --now nfs-server
+________________________________________
+32.7 Сервер srv1-cod — DNS + CA + Zabbix (углублённо)
+(DNS и CA см. выше)
+nano /etc/zabbix/zabbix_server.conf
+# DBHost=localhost
+# DBName=zabbix
+# DBUser=zabbix_user
+# DBPassword=P@ssw0rdZabbix
+systemctl enable --now zabbix-server zabbix-agent apache2
+________________________________________
+32.8 Контроллер домена — dc-a (Samba AD + DNS)
+hostnamectl set-hostname dc-a.office.ssa2026.region
+timedatectl set-timezone Europe/Moscow
+apt install -y samba krb5-user smbclient bind9-dlz
+samba-tool domain provision --realm=OFFICE.SSA2026.REGION --domain=OFFICE --server-role=dc --dns-backend=BIND9_DLZ --adminpass=P@ssw0rd
+systemctl enable --now samba-ad-dc
+samba-tool ou create ofadmins
+samba-tool ou create ofusers
+samba-tool group add ofadmins --memberof=ofadmins
+samba-tool group add ofusers --memberof=ofusers
+samba-tool user create ofadmin1 P@ssw0rd --memberof=ofadmins --userou=ofadmins
+samba-tool user create ofuser1 P@ssw0rd --memberof=ofusers --userou=ofusers
+samba-tool user create user1 P@ssw0rd --userou=ofusers
+________________________________________
+32.9 Коммутаторы офиса — sw1-a / sw2-a (STP)
+# sw1-a
+hostnamectl set-hostname sw1-a.office.ssa2026.region
+timedatectl set-timezone Europe/Moscow
+nmcli con add type bridge ifname br0
+nmcli con add type ethernet ifname eth1 master br0
+nmcli con add type ethernet ifname eth2 master br0
+bridge vlan add dev br0 vid 100 pvid untagged
+bridge vlan add dev br0 vid 200
+bridge vlan add dev br0 vid 300
+bridge stp yes
+bridge vlan set dev br0 priority 0x1000
+ip addr add 192.168.300.20/24 dev br0
+ip link set br0 up
+# sw2-a
+hostnamectl set-hostname sw2-a.office.ssa2026.region
+timedatectl set-timezone Europe/Moscow
+nmcli con add type bridge ifname br0
+nmcli con add type ethernet ifname eth1 master br0
+nmcli con add type ethernet ifname eth2 master br0
+bridge vlan add dev br0 vid 100 pvid untagged
+bridge vlan add dev br0 vid 200
+bridge vlan add dev br0 vid 300
+bridge stp yes
+bridge vlan set dev br0 priority 0x2000
+ip addr add 192.168.300.21/24 dev br0
+ip link set br0 up
+________________________________________
+32.10 Рабочие станции — cli (домен + политики)
+hostnamectl set-hostname cli1-a.office.ssa2026.region
+timedatectl set-timezone Europe/Moscow
+apt install -y realmd sssd adcli samba-common
+realm join --user=ofadmin1 office.ssa2026.region
+cp /opt/company_wallpaper.jpg /usr/share/backgrounds/
+gsettings set org.gnome.desktop.background picture-uri 'file:///usr/share/backgrounds/company_wallpaper.jpg'
+________________________________________
+32.11 Сервер IP-телефонии — sip-cod (SNG7-PBX16)
+hostnamectl set-hostname sip-cod.cod.ssa2026.region
+timedatectl set-timezone Europe/Moscow
+# ISO образ SNG7-PBX16 уже установлен
+# Настройка внутренних номеров
+# admin-cod 1001, cli-cod 1002, cli1-a 2001, cli2-a 2002
+nano /etc/asterisk/sip.conf
+# Пример записи для каждого пользователя
+[1001]
+type=friend
+username=1001
+secret=P@ssw0rd
+host=dynamic
+context=internal
+disallow=all
+allow=ulaw
+[1002]
+type=friend
+username=1002
+secret=P@ssw0rd
+host=dynamic
+context=internal
+disallow=all
+allow=ulaw
+[2001]
+type=friend
+username=2001
+secret=P@ssw0rd
+host=dynamic
+context=internal
+disallow=all
+allow=ulaw
+[2002]
+type=friend
+username=2002
+secret=P@ssw0rd
+host=dynamic
+context=internal
+disallow=all
+allow=ulaw
+# Порт 5060
+nano /etc/asterisk/udp.conf
+# udpbindaddr=0.0.0.0:5060
+# Настройка dialplan
+nano /etc/asterisk/extensions.conf
+[internal]
+exten => 1001,1,Dial(SIP/1001)
+exten => 1002,1,Dial(SIP/1002)
+exten => 2001,1,Dial(SIP/2001)
+exten => 2002,1,Dial(SIP/2002)
+systemctl enable --now asterisk
+asterisk -rx "sip reload"
+asterisk -rx "dialplan reload"
+________________________________________
+📌 Итог: последовательность настройки модуля Б
+1.	srv2-cod — PostgreSQL + iSCSI target + NFS
+2.	srv1-cod — DNS + CA + Zabbix
+3.	dc-a — Samba AD + DNS
+4.	sw1-a / sw2-a — STP root / secondary
+5.	cli1-a / cli2-a / cli-cod / admin-cod — домен + политики
+6.	sip-cod — IP-телефония CHAN_SIP + внутренние номера
+Каждое устройство настраивается один раз, проверяется и больше не трогается.
